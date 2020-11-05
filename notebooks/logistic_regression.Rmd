@@ -1,0 +1,146 @@
+---
+title: "Logistic Regression"
+output: pdf_document
+---
+
+# Imports
+
+```{r message=F, warning=F}
+library(rstudioapi)
+library(tidyverse)
+library(magrittr)
+library(DescTools)
+library(gridExtra)
+library(pROC)
+library(caret)
+library(car)
+library(RANN)
+```
+
+
+# Load data
+```{r}
+current_path = rstudioapi::getActiveDocumentContext()$path 
+setwd(dirname(current_path))
+
+X = read_csv("../data/training_set_features.csv")
+Y = read_csv("../data/training_set_labels.csv")
+
+df = X %>% 
+  inner_join(Y, by='respondent_id')
+  
+dimensions = dim(df)
+sprintf("The dataset contains %d rows and %d columns", dimensions[1], dimensions[2]) %>% cat()
+
+
+features = names(X)[-1]
+targets = names(Y)[-1]
+
+df[features] <- lapply(df[features], factor) 
+```
+
+# Train test split
+```{r}
+trainRowNumbers <- createDataPartition(df$seasonal_vaccine, p=0.8, list=FALSE)
+
+trainData <- df[trainRowNumbers,]
+
+testData <- df[-trainRowNumbers,]
+```
+
+# Preprocessing
+
+```{r}
+# preProcess_missingdata_model <- preProcess(as.data.frame(trainData), method='knnImpute')
+# preProcess_missingdata_model
+# 
+# trainData <- predict(preProcess_missingdata_model, newdata = trainData)
+# anyNA(trainData)
+```
+```{r}
+trainData[features] <- lapply(trainData[features], addNA) 
+testData[features] <- lapply(testData[features], addNA) 
+```
+
+
+# Model fit
+
+## Dropping all rows with any NA
+
+```{r}
+form_seasonal = as.formula(paste("seasonal_vaccine", paste(features, collapse=" + "), sep=" ~ "))
+model_seasonal <- glm(form_seasonal, data = trainData, family = "binomial")
+
+form_h1n1 = as.formula(paste("h1n1_vaccine", paste(features, collapse=" + "), sep=" ~ "))
+model_h1n1 <- glm(form_h1n1, data = trainData, family = "binomial")
+
+# summary(logit.model)
+# 
+# Anova(logit.model)
+```
+
+
+```{r}
+evaluate_model = function(model, data, target, plot=F){
+  predicted.prob <- predict(model, data, type="response") # Prediction
+
+  result.roc <- roc(data[[target]], predicted.prob) # Draw ROC curve.
+  if(plot){
+    plot(result.roc, print.thres="best", print.thres.best.method="closest.topleft")
+  }
+  
+  result.coords <- coords(result.roc, "best", best.method="closest.topleft", ret=c("threshold", "accuracy"))
+  # print(result.coords)#to get threshold and accuracy
+  return(auc(result.roc))
+}
+
+add_performance = function(df, model, version, target){
+  df[nrow(df) + 1, ] = c(target,
+                         version,
+                         "train",
+                         evaluate_model(model, trainData, target))
+  
+  df[nrow(df) + 1, ] = c(target,
+                         version,
+                         "test",
+                         evaluate_model(model, testData, target))
+  return(df)
+}
+
+performance_df = data.frame(matrix(ncol=4,
+                                   nrow=0, 
+                                   dimnames=list(NULL, c("Model", "Version", "Data", "AUC"))))
+
+performance_df = add_performance(performance_df, model_h1n1, "baseline", "h1n1_vaccine")
+performance_df = add_performance(performance_df, model_seasonal, "baseline", "seasonal_vaccine")
+
+performance_df
+```
+
+# Validation prediction
+
+```{r}
+X_holdout = read_csv("../data/test_set_features.csv")
+
+X_holdout %>% summarise_all(funs(sum(is.na(.))/n()*100)) %>% 
+  gather(key="feature", value="missing_pct") %>% 
+  ggplot(aes(x=reorder(feature,-missing_pct),y=missing_pct)) +
+  geom_bar(stat="identity", fill="steelblue")+
+  labs(y = "missing %", x = "features") +
+  coord_flip() +
+  theme_minimal()
+```
+
+```{r}
+X_holdout[features] <- lapply(X_holdout[features], addNA)
+
+holdout_h1n1_prediction <- predict(model_h1n1, X_holdout, type="response")
+holdout_seasonal_prediction <- predict(model_seasonal, X_holdout, type="response")
+
+submission_df = data.frame(respondent_id = X_holdout$respondent_id,
+                           h1n1_vaccine = holdout_h1n1_prediction,
+                           seasonal_vaccine = holdout_seasonal_prediction)
+
+write.csv(submission_df,".\\submissions\\logistic_regression.csv", row.names = FALSE, quote=FALSE)
+```
+

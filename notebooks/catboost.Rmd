@@ -1,0 +1,230 @@
+---
+title: "Catboost"
+output: pdf_document
+---
+
+```{r}
+library(catboost)
+library(rstudioapi)
+library(tidyverse)
+library(magrittr)
+library(gridExtra)
+library(pROC)
+library(caret)
+library(car)
+```
+
+# Load data
+```{r}
+current_path = rstudioapi::getActiveDocumentContext()$path 
+setwd(dirname(current_path))
+
+X = read_csv("../data/training_set_features.csv")
+Y = read_csv("../data/training_set_labels.csv")
+
+df = X %>% 
+  inner_join(Y, by='respondent_id')
+  
+dimensions = dim(df)
+sprintf("The dataset contains %d rows and %d columns", dimensions[1], dimensions[2]) %>% cat()
+
+
+features = names(X)[-1]
+targets = names(Y)[-1]
+
+# df[c(targets, features)] <- lapply(df[c(targets, features)], factor) 
+df[features] <- lapply(df[features], factor) 
+```
+
+# Train test split
+
+```{r}
+trainRowNumbers <- createDataPartition(df$seasonal_vaccine, p=0.8, list=FALSE) %>% as.vector()
+
+trainData <- df[trainRowNumbers,]
+
+testData <- df[-trainRowNumbers,]
+
+
+trainFeatures = trainData %>% select(all_of(features))
+trainTarget = trainData %>% select(all_of(targets))
+
+testFeatures = testData %>% select(all_of(features))
+testTarget = testData %>% select(all_of(targets))
+```
+
+# Baseline fit
+
+```{r}
+model_fit = function(trainFeatures, trainTarget, testFeatures, testTarget, fit_params, cat_features){
+  
+  train_pool = catboost.load_pool(trainFeatures, label = trainTarget,
+                                  cat_features = cat_features)
+  test_pool = catboost.load_pool(testFeatures, label = testTarget,
+                                  cat_features = cat_features)
+  
+  model <- catboost.train(train_pool,
+                          params = fit_params,
+                          test_pool = test_pool)
+  return(model)
+  
+}
+
+fit_params <- list(iterations = 100,
+                   loss_function = 'Logloss',
+                   task_type = 'GPU',
+                   verbose=100)
+
+cat_features = seq(from=0, to=length(features) - 1)
+
+model_h1n1 = model_fit(trainFeatures, trainTarget$h1n1_vaccine, testFeatures, testTarget$h1n1_vaccine, fit_params, cat_features)
+
+model_seasonal = model_fit(trainFeatures, trainTarget$seasonal_vaccine, testFeatures, testTarget$seasonal_vaccine, fit_params, cat_features)
+```
+
+
+```{r}
+fit_params_2 <- list(iterations = 4000,
+                     learning_rate = 0.02,
+                     early_stopping_rounds = 100,
+                     eval_metric = "AUC",
+                     loss_function = 'Logloss',
+                     task_type = 'GPU',
+                     verbose=300)
+
+model_h1n1_2 = model_fit(trainFeatures, trainTarget$h1n1_vaccine, testFeatures, testTarget$h1n1_vaccine, fit_params_2, cat_features)
+
+model_seasonal_2 = model_fit(trainFeatures, trainTarget$seasonal_vaccine, testFeatures, testTarget$seasonal_vaccine, fit_params_2, cat_features)
+```
+
+```{r}
+evaluate_model = function(model, features, labels, plot=F){
+  pool = catboost.load_pool(features, label = labels)
+  prediction <- catboost.predict(model, 
+                                 pool,
+                                 prediction_type = "Probability") # Prediction
+
+  result.roc <- roc(labels, prediction) # Draw ROC curve.
+  
+  if(plot){
+    plot(result.roc, print.thres="best", print.thres.best.method="closest.topleft")
+  }
+  
+  result.coords <- coords(result.roc, "best", best.method="closest.topleft", ret=c("threshold", "accuracy"), transpose = TRUE)
+  return(auc(result.roc))
+}
+
+add_performance = function(df, model, version, target){
+  df[nrow(df) + 1, ] = c(target,
+                         version,
+                         "train",
+                         evaluate_model(model, trainFeatures, trainTarget[[target]]))
+  
+  df[nrow(df) + 1, ] = c(target,
+                         version,
+                         "test",
+                         evaluate_model(model, testFeatures, testTarget[[target]]))
+  return(df)
+}
+
+performance_df = data.frame(matrix(ncol=4,
+                                   nrow=0, 
+                                   dimnames=list(NULL, c("Model", "Version", "Data", "AUC"))))
+
+performance_df = add_performance(performance_df, model_h1n1, "baseline", "h1n1_vaccine")
+performance_df = add_performance(performance_df, model_seasonal, "baseline", "seasonal_vaccine")
+
+performance_df = add_performance(performance_df, model_h1n1_2, "early_stop", "h1n1_vaccine")
+performance_df = add_performance(performance_df, model_seasonal_2, "early_stop", "seasonal_vaccine")
+
+performance_df %>% 
+  arrange(Model, Data)
+```
+
+# Model interpretability 
+
+```{r}
+plot_feature_importance = function(model, Features, Target, cat_features){
+  pool = catboost.load_pool(Features, label = Target,
+                            cat_features = cat_features)
+  
+  importance = catboost.get_feature_importance(model,
+                                               pool = pool,
+                                               type = "FeatureImportance",
+                                               thread_count = -1)
+  importance_df = as.data.frame(importance)
+  names(importance_df) = c("Importance")
+  
+  p = importance_df %>%
+    ggplot(aes(x = reorder(rownames(importance_df), Importance), y = Importance)) +
+    geom_bar(stat = 'identity') +
+    coord_flip() +
+    theme(axis.text.x = element_text(angle = 45)) +
+    labs(x = "Features")
+  return(p)
+}
+
+plot_feature_importance(model_h1n1, testFeatures, testTarget$h1n1_vaccine, cat_features) +
+  labs(title="Feature importance on train data")
+
+plot_feature_importance(model_h1n1_2, testFeatures, testTarget$h1n1_vaccine, cat_features) +
+  labs(title="Feature importance on train data")
+
+plot_feature_importance(model_seasonal, testFeatures, testTarget$seasonal_vaccine, cat_features) +
+  labs(title="Feature importance on train data")
+
+plot_feature_importance(model_seasonal_2, testFeatures, testTarget$seasonal_vaccine, cat_features) +
+  labs(title="Feature importance on train data")
+```
+
+
+# Validation predictions
+
+```{r}
+X_holdout = read_csv("../data/test_set_features.csv")
+
+X_holdout[features] <- lapply(X_holdout[features], factor)
+holdoutFeatures = X_holdout %>% select(all_of(features))
+
+holdout_pool = catboost.load_pool(data = holdoutFeatures)
+
+holdout_h1n1_prediction <- catboost.predict(model_h1n1,
+                                            holdout_pool,
+                                            prediction_type = "Probability")
+
+holdout_seasonal_prediction <- catboost.predict(model_seasonal,
+                                            holdout_pool,
+                                            prediction_type = "Probability")
+
+holdout_h1n1_prediction_2 <- catboost.predict(model_h1n1_2,
+                                            holdout_pool,
+                                            prediction_type = "Probability")
+
+holdout_seasonal_prediction_2 <- catboost.predict(model_seasonal_2,
+                                            holdout_pool,
+                                            prediction_type = "Probability")
+
+submission_df = data.frame(respondent_id = X_holdout$respondent_id,
+                           h1n1_vaccine = holdout_h1n1_prediction,
+                           seasonal_vaccine = holdout_seasonal_prediction)
+
+submission_df_early = data.frame(respondent_id = X_holdout$respondent_id,
+                           h1n1_vaccine = holdout_h1n1_prediction_2,
+                           seasonal_vaccine = holdout_seasonal_prediction_2)
+
+write.csv(submission_df_early,".\\submissions\\catboost_early_stop.csv", row.names = FALSE, quote=FALSE)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+

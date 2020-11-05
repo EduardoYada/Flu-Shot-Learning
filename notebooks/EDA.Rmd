@@ -1,0 +1,208 @@
+---
+title: "EDA"
+output: pdf_document
+---
+
+The objective of the Exploratory Data Analysis (EDA) is to investigate the data so as to discover patterns, to spot anomalies, to handle missing values, to test hypothesis and to check assumptions with the help of summary statistics and graphical representations. 
+
+# Imports
+
+```{r message=F, warning=F}
+library(rstudioapi)
+library(tidyverse)
+library(magrittr)
+library(DescTools)
+library(gridExtra)
+```
+
+
+# Loading data
+
+```{r message=F, results='asis'}
+current_path = rstudioapi::getActiveDocumentContext()$path 
+setwd(dirname(current_path))
+
+X_train = read_csv("../data/training_set_features.csv")
+Y_train = read_csv("../data/training_set_labels.csv")
+
+df_train = X_train %>% 
+  inner_join(Y_train, by='respondent_id')
+  
+dimensions = dim(df_train)
+sprintf("The dataset contains %d rows and %d columns", dimensions[1], dimensions[2]) %>% cat()
+
+features = names(X_train)[-1]
+targets = names(Y_train)[-1]
+```
+
+```{r}
+df_train %>% glimpse()
+```
+
+- All of the columns available are categorical
+- Some of them are labeled as numeric values and others are still characters
+- The features `hhs_geo_region`, `employment_industry`, `employment_occupation` are random character strings
+
+## Targets
+
+Checking class balance.
+
+```{r results='asis'}
+for(target in targets){
+  percent = df_train[[target]] %>% mean()
+  sprintf("- %.1f%% of the observations of the column %s are 1's \n", percent * 100, target) %>% cat()
+}
+```
+
+The classes of the variable corresponding to Whether the respondent received H1N1 flu vaccine is imbalanced, much more people didn't received the H1N1 vaccine. 
+
+```{r warning=F, message=F}
+target = "h1n1_vaccine"
+
+df_train = df_train %>% 
+  mutate_at(targets, factor)
+
+plots = list()
+i = 1
+
+for(target in targets){
+  p = df_train %>% 
+    ggplot(aes_string(x=target)) +
+    geom_bar(fill="steelblue")
+  plots[[i]] = p 
+  i = i + 1
+}
+
+do.call("grid.arrange", c(plots, ncol=2))
+```
+
+## Features
+
+```{r}
+charac_columns = df_train %>% 
+  select_if(is.character) %>% 
+  names()
+
+charac_columns
+```
+
+```{r echo=F}
+df_train[features] <- lapply(df_train[features], factor) 
+```
+
+Distribution of each feature:
+
+```{r fig.height = 8}
+plots = list()
+i = 1
+
+for(feature in features){
+  p = df_train %>% 
+    ggplot(aes_string(x=feature)) +
+    geom_bar(fill="steelblue") 
+  
+  plots[[i]] = p 
+  if(i %% 4 == 0){
+    do.call("grid.arrange", c(plots[(i-3): i], nrow=4))
+  }
+  i = i + 1
+}
+```
+
+Distribution of each feature by target
+
+```{r fig.height = 8}
+for(target in targets){
+  for(feature in features){
+    p = df_train %>% 
+      ggplot(aes_string(x=feature, fill=target)) +
+      geom_bar(position="dodge")
+    
+    plots[[i]] = p 
+    if(i %% 4 == 0){
+      do.call("grid.arrange", c(plots[(i-3): i], nrow=4))
+    }
+    i = i + 1
+  }
+}
+```
+
+```{r warning=F}
+df_train %>% summarise_all(funs(sum(is.na(.))/n()*100)) %>% 
+  gather(key="feature", value="missing_pct") %>% 
+  ggplot(aes(x=reorder(feature,-missing_pct),y=missing_pct)) +
+  geom_bar(stat="identity", fill="steelblue")+
+  labs(y = "missing %", x = "features") +
+  coord_flip() +
+  theme_minimal()
+```
+
+```{r warning=F, message=F, fig.height = 8}
+chisq_values = c()
+uncert_values = c()
+target_values = c()
+
+for(target in targets){
+  for(feature in features){
+    contingency = df_train %>% 
+      select(target, feature) %>% 
+      table() 
+  
+    p.value = chisq.test(contingency)$p.value
+    
+    target_values = c(target_values, target)
+    chisq_values = c(chisq_values, p.value)
+    uncert_values = c(uncert_values, UncertCoef(contingency))
+  }
+}
+
+results = tibble(feature = rep(features, 2),
+                 target = target_values,
+                 p.value = chisq_values,
+                 uncertainty = uncert_values)
+
+
+for(target_value in targets){
+  p1 = results %>%
+    filter(target == target_value) %>% 
+    filter(p.value < 1) %>% 
+    ggplot(aes(x=reorder(feature, -p.value), y=p.value)) +
+    geom_bar(stat='identity') + 
+    xlab("Feature") + 
+    ylab("p-value") +
+    ggtitle(sprintf("Chi-squared test p-values for target: %s", target)) +
+    coord_flip()
+  
+  p2 = results %>%
+    filter(target == target_value) %>% 
+    filter(p.value < 1) %>% 
+    ggplot(aes(x=reorder(feature, uncertainty), y=uncertainty)) +
+    geom_bar(stat='identity') + 
+    xlab("Feature") + 
+    ylab("Uncertainty Coefficient") +
+    ggtitle(sprintf("Uncertainty Coefficient for target: %s", target)) +
+    coord_flip()
+  
+  # print(p1)
+  # print(p2)
+  do.call("grid.arrange", c(list(p1, p2), nrow=2))
+}
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
