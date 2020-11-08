@@ -8,16 +8,17 @@ from sklearn.model_selection import train_test_split
 from torch.utils.data.dataset import random_split # cv for torch
 from tqdm import trange
 import os.path
+import random
 # XXX: 
 
 np.random.seed(1)
-
+random.seed()
 
 # XXX: t.set_description( f'')
 TARGET =  'h1n1_vaccine'
 EPOCHS = 1000
 LEARNING_RATE = 0.01
-BATCH_SIZE = 4
+BATCH_SIZE = 128
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 class Net(nn.Module):
@@ -41,11 +42,14 @@ class Net(nn.Module):
 
 class IngestData(Dataset):
 
-    def __init__(self):
-        x = pd.read_csv('../../data/training_set_features.csv')
+    def __init__(self, train_path='../../data/training_set_features.csv',
+                       test_path='../../data/training_set_labels.csv'):
+        
+        x = pd.read_csv(train_path)
         n_features = x.shape[1]
-        y = pd.read_csv('../../data/training_set_labels.csv')[TARGET]
+        y = pd.read_csv(test_path)['h1n1_vaccine']
         scl = MinMaxScaler()
+
         for col in x:
             # parsing as numeric data 
             x[col] = x[col].astype('category').cat.codes
@@ -67,26 +71,15 @@ class IngestData(Dataset):
 
         return self.n_samples
 
-
-def load_data_from_pandas(path='../../data'):
-
-    x = pd.read_csv('../../data/training_set_features.csv')
-    y = pd.read_csv('../../data/training_set_labels.csv')[TARGET]
-
-    for col in x:
-        # parsing as numeric data 
-        x[col] = x[col].astype('category').cat.codes
-    
-    
-    X_train, X_test, y_train, y_test = train_test_split(x, y, shuffle=True)
-
-def train_my_model(model, data, loss_fn=torch.nn.BCEWithLogitsLoss(),  optimizer=None, epochs=EPOCHS):
+def train_my_model(model, data, loss_fn=torch.nn.BCELoss(),  optimizer=None, epochs=EPOCHS):
     if optimizer is None:
         optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
     for epoc in (t := trange(epochs)):
+
+        model.train()
+        
         for x_batch, y_batch in data:
-            # model.train()
              # Makes predictions
             yhat = model(x_batch)
              # Computes loss
@@ -106,6 +99,7 @@ def main():
     
     data = IngestData()
     n_features = data.n_features
+    print(n_features)
     data = DataLoader(data, batch_size=64, shuffle=False)
     model = Net(n_features)
 
