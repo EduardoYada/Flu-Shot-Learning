@@ -85,7 +85,7 @@ def get_mnist():
 
     train_data, val_data = OptunaData(train.drop[TARGET], train[TARGET]),  \
                            OptunaData(val.drop[TARGET], val[TARGET])
-
+    print(train_data, val_data)
     train_loader, valid_loader = DataLoader(train_data, batch_size=BATCHSIZE) , \
                                 DataLoader(val_data, batch_size=BATCHSIZE)
      
