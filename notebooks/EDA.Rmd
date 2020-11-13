@@ -88,6 +88,16 @@ charac_columns
 
 ```{r echo=F}
 df_train[features] <- lapply(df_train[features], factor) 
+
+df_train %>% 
+  dplyr::select(features) %>% 
+  summarise_all(n_distinct) %>% 
+  gather(key="feature", value="level_count") %>% 
+  ggplot(aes(x=reorder(feature,-level_count),y=level_count)) +
+  geom_bar(stat="identity", fill="steelblue")+
+  labs(y = "Levels", x = "features") +
+  coord_flip() +
+  theme_minimal()
 ```
 
 Distribution of each feature:

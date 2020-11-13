@@ -1,0 +1,143 @@
+---
+title: "SVM"
+output: pdf_document
+---
+
+# Imports
+
+```{r message=F, warning=F}
+library(rstudioapi)
+library(tidyverse)
+library(magrittr)
+library(DescTools)
+library(gridExtra)
+library(pROC)
+library(caret)
+library(car)
+library(gamlss)
+library(e1071)
+```
+
+
+# Load data
+
+```{r}
+current_path = rstudioapi::getActiveDocumentContext()$path 
+setwd(dirname(current_path))
+
+X = read_csv("../data/training_set_features.csv")
+Y = read_csv("../data/training_set_labels.csv")
+
+target_recode = function(x) {
+  return(dplyr::recode(x,
+         "0" = "No",
+         "1" = "Yes"))
+}
+
+id_column_name = names(X)[1]
+features = names(X)[-1]
+targets = names(Y)[-1]
+
+# Y = Y %>% 
+#   mutate_at(targets, target_recode)
+```
+
+# Train test split
+
+```{r}
+set.seed(123)
+trainRowNumbers = createDataPartition(X[[1]], p=0.8, list=FALSE)
+
+trainFeatures = X %>% slice(trainRowNumbers) 
+testFeatures = X %>% slice(-trainRowNumbers) 
+
+trainTargets = Y %>% slice(trainRowNumbers)
+testTarget = Y %>% slice(-trainRowNumbers)
+```
+
+# Preprocessing
+
+```{r}
+remove_constant_columns = function(df){
+  return(df[,apply(df, 2, var, na.rm=TRUE) != 0])
+}
+
+train_preproc = function(trainFeatures, id_column_name){
+  trainFeatures[features] = trainFeatures %>% 
+    dplyr:: select(-all_of(id_column_name)) %>% 
+    mutate_all(as.factor) %>% 
+    mutate_all(addNA)
+  dummy = dummyVars(paste(" ~ . -", id_column_name), data=trainFeatures)
+  trainFeaturesProcessed = data.frame(predict(dummy, newdata = trainFeatures)) 
+  trainFeaturesProcessed[[id_column_name]] = trainFeatures[[id_column_name]]
+  trainFeaturesProcessed = remove_constant_columns(trainFeaturesProcessed)
+  
+  apply_preproc = function(testFeatures){
+    testFeatures[features] = testFeatures %>% 
+      dplyr:: select(-all_of(id_column_name)) %>% 
+      mutate_all(as.factor) %>% 
+      mutate_all(addNA)
+    testFeaturesProcessed = data.frame(predict(dummy, newdata = testFeatures)) 
+    testFeaturesProcessed[[id_column_name]] = testFeatures[[id_column_name]]
+    testFeaturesProcessed = remove_constant_columns(testFeaturesProcessed)
+    return(testFeaturesProcessed)
+  }
+  return(list("trainFeaturesProcessed"=trainFeaturesProcessed,
+              "apply_preproc"=apply_preproc))
+}
+
+
+preproc = train_preproc(trainFeatures, id_column_name)
+trainFeaturesProcessed = preproc$trainFeaturesProcessed
+apply_preproc = preproc$apply_preproc
+
+testFeaturesProcessed = apply_preproc(testFeatures)
+```
+
+# Model Fit
+
+```{r}
+# Setup for cross validation
+ctrl <- trainControl(method="repeatedcv",   # 10fold cross validation
+                     repeats=5,         # do 5 repetitions of cv
+                     summaryFunction=twoClassSummary,   # Use AUC to pick the best model
+                     classProbs=TRUE)
+
+
+#Train and Tune the SVM
+svm.tune <- train(x=trainFeaturesProcessed,
+                  y=make.names(trainTargets$h1n1_vaccine),
+                  method = "svmRadial",   # Radial kernel
+                  tuneLength = 5,                   # 5 values of the cost function
+                  metric="ROC",
+                  trControl=ctrl)
+
+```
+
+
+```{r}
+obj <- tune(svm, train.x=trainFeaturesProcessed, train.y=trainTargets$h1n1_vaccine,
+            ranges = list(gamma = 2^(-1:1), cost = 2^(2:4)),
+            tunecontrol = tune.control(sampling = "fix")
+           )
+
+## alternatively:
+## obj <- tune.svm(Species~., data = iris, gamma = 2^(-1:1), cost = 2^(2:4))
+
+summary(obj)
+plot(obj)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+

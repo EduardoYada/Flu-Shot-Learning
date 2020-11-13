@@ -14,7 +14,7 @@ library(gridExtra)
 library(pROC)
 library(caret)
 library(car)
-library(RANN)
+library(gamlss)
 ```
 
 
@@ -51,28 +51,39 @@ testData <- df[-trainRowNumbers,]
 # Preprocessing
 
 ```{r}
-# preProcess_missingdata_model <- preProcess(as.data.frame(trainData), method='knnImpute')
-# preProcess_missingdata_model
-# 
-# trainData <- predict(preProcess_missingdata_model, newdata = trainData)
-# anyNA(trainData)
-```
-```{r}
 trainData[features] <- lapply(trainData[features], addNA) 
 testData[features] <- lapply(testData[features], addNA) 
 ```
 
-
 # Model fit
 
-## Dropping all rows with any NA
+## GAMLSS
 
 ```{r}
 form_seasonal = as.formula(paste("seasonal_vaccine", paste(features, collapse=" + "), sep=" ~ "))
-model_seasonal <- glm(form_seasonal, data = trainData, family = "binomial")
+
+gamlss_seasonal = gamlss(form_seasonal, data=trainData, family=BB)
+plot(gamlss_seasonal)
+wp(gamlss_seasonal)
+rqres.plot(gamlss_seasonal,howmany=4,type="wp")
+```
+
+```{r}
+form_h1n1 = as.formula(paste("seasonal_vaccine", paste(features, collapse=" + "), sep=" ~ "))
+
+gamlss_h1n1 = gamlss(form_h1n1, data=trainData, family=BB)
+plot(gamlss_h1n1)
+wp(gamlss_h1n1)
+rqres.plot(gamlss_h1n1,howmany=4,type="wp")
+```
+
+
+```{r}
+form_seasonal = as.formula(paste("seasonal_vaccine", paste(features, collapse=" + "), sep=" ~ "))
+logistic_seasonal <- glm(form_seasonal, data = trainData, family = "binomial")
 
 form_h1n1 = as.formula(paste("h1n1_vaccine", paste(features, collapse=" + "), sep=" ~ "))
-model_h1n1 <- glm(form_h1n1, data = trainData, family = "binomial")
+logistic_h1n1 <- glm(form_h1n1, data = trainData, family = "binomial")
 
 # summary(logit.model)
 # 
@@ -81,29 +92,36 @@ model_h1n1 <- glm(form_h1n1, data = trainData, family = "binomial")
 
 
 ```{r}
-evaluate_model = function(model, data, target, plot=F){
-  predicted.prob <- predict(model, data, type="response") # Prediction
-
+evaluate_model = function(model, data, target, method, plot=F){
+  if(str_detect(method, "logistic")){
+    predicted.prob = predict(model, data, type="response") # Prediction
+  }else if(str_detect(method, "gamlss")){
+    predicted.prob = predict(model, what="mu", newdata=data, type="response") 
+  }else{
+    return(0)
+  }
+  
   result.roc <- roc(data[[target]], predicted.prob) # Draw ROC curve.
+  
   if(plot){
     plot(result.roc, print.thres="best", print.thres.best.method="closest.topleft")
   }
   
-  result.coords <- coords(result.roc, "best", best.method="closest.topleft", ret=c("threshold", "accuracy"))
+  # result.coords <- coords(result.roc, "best", best.method="closest.topleft", ret=c("threshold", "accuracy"))
   # print(result.coords)#to get threshold and accuracy
   return(auc(result.roc))
 }
 
 add_performance = function(df, model, version, target){
-  df[nrow(df) + 1, ] = c(target,
+  df[nrow(df) + 1, ] = list(target,
                          version,
                          "train",
-                         evaluate_model(model, trainData, target))
+                         evaluate_model(model, trainData, target, version))
   
-  df[nrow(df) + 1, ] = c(target,
+  df[nrow(df) + 1, ] = list(target,
                          version,
                          "test",
-                         evaluate_model(model, testData, target))
+                         evaluate_model(model, testData, target, version))
   return(df)
 }
 
@@ -111,10 +129,19 @@ performance_df = data.frame(matrix(ncol=4,
                                    nrow=0, 
                                    dimnames=list(NULL, c("Model", "Version", "Data", "AUC"))))
 
-performance_df = add_performance(performance_df, model_h1n1, "baseline", "h1n1_vaccine")
-performance_df = add_performance(performance_df, model_seasonal, "baseline", "seasonal_vaccine")
+performance_df = add_performance(performance_df, logistic_h1n1, "logistic", "h1n1_vaccine")
+performance_df = add_performance(performance_df, logistic_seasonal, "logistic", "seasonal_vaccine")
 
-performance_df
+performance_df = add_performance(performance_df, gamlss_h1n1, "gamlss", "h1n1_vaccine")
+performance_df = add_performance(performance_df, gamlss_seasonal, "gamlss", "seasonal_vaccine")
+
+scaleFUN <- function(x) sprintf("%.2f", x)
+performance_df %>% 
+  ggplot(aes(x=Data, y=AUC, fill=Version)) + 
+  geom_bar(stat = "identity", position="dodge") + 
+  facet_grid(~ Model) +
+  scale_y_continuous(labels=scaleFUN)
+
 ```
 
 # Validation prediction
@@ -143,4 +170,5 @@ submission_df = data.frame(respondent_id = X_holdout$respondent_id,
 
 write.csv(submission_df,".\\submissions\\logistic_regression.csv", row.names = FALSE, quote=FALSE)
 ```
+
 

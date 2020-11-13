@@ -22,40 +22,39 @@ setwd(dirname(current_path))
 X = read_csv("../data/training_set_features.csv")
 Y = read_csv("../data/training_set_labels.csv")
 
-df = X %>% 
-  inner_join(Y, by='respondent_id')
-  
-dimensions = dim(df)
-sprintf("The dataset contains %d rows and %d columns", dimensions[1], dimensions[2]) %>% cat()
-
-
+id_column_name = names(X)[1]
 features = names(X)[-1]
 targets = names(Y)[-1]
-
-# df[c(targets, features)] <- lapply(df[c(targets, features)], factor) 
-df[features] <- lapply(df[features], factor) 
 ```
 
 # Train test split
-
 ```{r}
-trainRowNumbers <- createDataPartition(df$seasonal_vaccine, p=0.8, list=FALSE) %>% as.vector()
+set.seed(123)
+trainRowNumbers = createDataPartition(X[[1]], p=0.8, list=FALSE)
 
-trainData <- df[trainRowNumbers,]
+trainFeatures = X %>% slice(trainRowNumbers) 
+testFeatures = X %>% slice(-trainRowNumbers) 
 
-testData <- df[-trainRowNumbers,]
+trainTargets = Y %>% slice(trainRowNumbers)
+testTarget = Y %>% slice(-trainRowNumbers)
 
 
-trainFeatures = trainData %>% select(all_of(features))
-trainTarget = trainData %>% select(all_of(targets))
 
-testFeatures = testData %>% select(all_of(features))
-testTarget = testData %>% select(all_of(targets))
+df[features] <- lapply(df[features], factor) 
 ```
 
 # Baseline fit
 
 ```{r}
+trainFeatures[features] = trainFeatures %>% 
+    dplyr:: select(-all_of(id_column_name)) %>% 
+    mutate_all(as.factor) %>% 
+  
+testFeatures[features] = testFeatures %>% 
+    dplyr:: select(-all_of(id_column_name)) %>% 
+    mutate_all(as.factor) %>% 
+
+
 model_fit = function(trainFeatures, trainTarget, testFeatures, testTarget, fit_params, cat_features){
   
   train_pool = catboost.load_pool(trainFeatures, label = trainTarget,

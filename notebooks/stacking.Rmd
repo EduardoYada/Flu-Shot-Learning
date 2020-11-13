@@ -1,0 +1,267 @@
+---
+title: "Stacking"
+output: pdf_document
+---
+
+# Imports
+
+```{r message=F, warning=F}
+library(rstudioapi)
+library(tidyverse)
+library(magrittr)
+library(DescTools)
+library(gridExtra)
+library(pROC)
+library(caret)
+library(car)
+library(gamlss)
+```
+
+
+# Load data
+```{r}
+current_path = rstudioapi::getActiveDocumentContext()$path 
+setwd(dirname(current_path))
+
+X = read_csv("../data/training_set_features.csv")
+Y = read_csv("../data/training_set_labels.csv")
+
+id_column_name = names(X)[1]
+features = names(X)[-1]
+targets = names(Y)[-1]
+```
+
+# Train test split
+```{r}
+set.seed(123)
+trainRowNumbers = createDataPartition(X[[1]], p=0.8, list=FALSE)
+
+trainFeatures = X %>% slice(trainRowNumbers) 
+testFeatures = X %>% slice(-trainRowNumbers) 
+
+trainTargets = Y %>% slice(trainRowNumbers)
+testTargets = Y %>% slice(-trainRowNumbers)
+```
+
+
+# Preprocessing
+
+```{r}
+remove_constant_columns = function(df){
+  return(df[,apply(df, 2, var, na.rm=TRUE) != 0])
+}
+
+train_preproc = function(trainFeatures, id_column_name){
+  trainFeatures[features] = trainFeatures %>% 
+    dplyr:: select(-all_of(id_column_name)) %>% 
+    mutate_all(as.factor) %>% 
+    mutate_all(addNA)
+  dummy = dummyVars(paste(" ~ . -", id_column_name), data=trainFeatures)
+  trainFeaturesProcessed = data.frame(predict(dummy, newdata = trainFeatures)) 
+  trainFeaturesProcessed[[id_column_name]] = trainFeatures[[id_column_name]]
+  trainFeaturesProcessed = remove_constant_columns(trainFeaturesProcessed)
+  
+  apply_preproc = function(testFeatures){
+    testFeatures[features] = testFeatures %>% 
+      dplyr:: select(-all_of(id_column_name)) %>% 
+      mutate_all(as.factor) %>% 
+      mutate_all(addNA)
+    testFeaturesProcessed = data.frame(predict(dummy, newdata = testFeatures)) 
+    testFeaturesProcessed[[id_column_name]] = testFeatures[[id_column_name]]
+    testFeaturesProcessed = remove_constant_columns(testFeaturesProcessed)
+    return(testFeaturesProcessed)
+  }
+  return(list("trainFeaturesProcessed"=trainFeaturesProcessed,
+              "apply_preproc"=apply_preproc))
+}
+
+
+preproc = train_preproc(trainFeatures, id_column_name)
+trainFeaturesProcessed = preproc$trainFeaturesProcessed
+apply_preproc = preproc$apply_preproc
+
+testFeaturesProcessed = apply_preproc(testFeatures)
+```
+
+# Model fit
+
+```{r}
+library(h2o)
+h2o.init()
+
+train = trainFeaturesProcessed %>% 
+  inner_join(trainTargets) %>% 
+  as.h2o()
+
+test = testFeaturesProcessed %>% 
+  inner_join(testTargets) %>% 
+  as.h2o()
+
+# Identify predictors and response
+y <- "h1n1_vaccine"
+x <- setdiff(names(train), c(targets, id_column_name))
+
+# For binary classification, response should be a factor
+train[, y] <- as.factor(train[, y])
+test[, y] <- as.factor(test[, y])
+
+# Number of CV folds (to generate level-one data for stacking)
+nfolds <- 5
+
+# There are a few ways to assemble a list of models to stack toegether:
+# 1. Train individual models and put them in a list
+# 2. Train a grid of models
+# 3. Train several grids of models
+# Note: All base models must have the same cross-validation folds and
+# the cross-validated predicted values must be kept.
+
+
+# 1. Generate a 2-model ensemble (GBM + RF)
+
+# Train & Cross-validate a GBM
+h1n1_gbm <- h2o.gbm(x = x,
+                  y = y,
+                  training_frame = train,
+                  distribution = "bernoulli",
+                  ntrees = 10,
+                  max_depth = 3,
+                  min_rows = 2,
+                  learn_rate = 0.2,
+                  nfolds = nfolds,
+                  keep_cross_validation_predictions = TRUE,
+                  seed = 1)
+
+# Train & Cross-validate a RF
+h1n1_rf <- h2o.randomForest(x = x,
+                          y = y,
+                          training_frame = train,
+                          ntrees = 50,
+                          nfolds = nfolds,
+                          keep_cross_validation_predictions = TRUE,
+                          seed = 1)
+
+# Train a stacked ensemble using the GBM and RF above
+h1n1_ensemble <- h2o.stackedEnsemble(x = x,
+                                y = y,
+                                training_frame = train,
+                                base_models = list(h1n1_gbm, h1n1_rf))
+
+# Eval ensemble performance on a test set
+perf <- h2o.performance(h1n1_ensemble, newdata = test)
+
+# Compare to base learner performance on the test set
+perf_gbm_test <- h2o.performance(h1n1_gbm, newdata = test)
+perf_rf_test <- h2o.performance(h1n1_rf, newdata = test)
+baselearner_best_auc_test <- max(h2o.auc(perf_gbm_test), h2o.auc(perf_rf_test))
+ensemble_auc_test <- h2o.auc(perf)
+print(sprintf("Best Base-learner Test AUC:  %s", baselearner_best_auc_test))
+print(sprintf("Ensemble Test AUC:  %s", ensemble_auc_test))
+
+# Generate predictions on a test set (if neccessary)
+# pred <- h2o.predict(ensemble, newdata = test)
+
+```
+```{r}
+# Identify predictors and response
+y <- "seasonal_vaccine"
+x <- setdiff(names(train), c(targets, id_column_name))
+
+# For binary classification, response should be a factor
+train[, y] <- as.factor(train[, y])
+test[, y] <- as.factor(test[, y])
+
+# Number of CV folds (to generate level-one data for stacking)
+nfolds <- 5
+
+# There are a few ways to assemble a list of models to stack toegether:
+# 1. Train individual models and put them in a list
+# 2. Train a grid of models
+# 3. Train several grids of models
+# Note: All base models must have the same cross-validation folds and
+# the cross-validated predicted values must be kept.
+
+
+# 1. Generate a 2-model ensemble (GBM + RF)
+
+# Train & Cross-validate a GBM
+seasonal_gbm <- h2o.gbm(x = x,
+                  y = y,
+                  training_frame = train,
+                  distribution = "bernoulli",
+                  ntrees = 10,
+                  max_depth = 3,
+                  min_rows = 2,
+                  learn_rate = 0.2,
+                  nfolds = nfolds,
+                  keep_cross_validation_predictions = TRUE,
+                  seed = 1)
+
+# Train & Cross-validate a RF
+seasonal_rf <- h2o.randomForest(x = x,
+                          y = y,
+                          training_frame = train,
+                          ntrees = 50,
+                          nfolds = nfolds,
+                          keep_cross_validation_predictions = TRUE,
+                          seed = 1)
+
+# Train a stacked ensemble using the GBM and RF above
+seasonal_ensemble <- h2o.stackedEnsemble(x = x,
+                                y = y,
+                                training_frame = train,
+                                base_models = list(seasonal_gbm, seasonal_rf))
+
+# Eval ensemble performance on a test set
+perf <- h2o.performance(seasonal_ensemble, newdata = test)
+
+# Compare to base learner performance on the test set
+perf_gbm_test <- h2o.performance(seasonal_gbm, newdata = test)
+perf_rf_test <- h2o.performance(seasonal_rf, newdata = test)
+baselearner_best_auc_test <- max(h2o.auc(perf_gbm_test), h2o.auc(perf_rf_test))
+ensemble_auc_test <- h2o.auc(perf)
+print(sprintf("Best Base-learner Test AUC:  %s", baselearner_best_auc_test))
+print(sprintf("Ensemble Test AUC:  %s", ensemble_auc_test))
+```
+
+
+# Validation
+
+```{r}
+holdoutFeatures = read_csv("../data/test_set_features.csv")
+
+holdoutFeaturesProcessed = apply_preproc(holdoutFeatures)
+
+holdout = holdoutFeaturesProcessed %>% as.h2o()
+
+seasonal_holdout_pred <- h2o.predict(seasonal_ensemble, newdata = holdout)
+h1n1_holdout_pred <- h2o.predict(h1n1_ensemble, newdata = holdout)
+
+submission_df = data.frame(respondent_id = holdoutFeatures$respondent_id,
+                           h1n1_vaccine = h1n1_holdout_pred$p1 %>% as.vector(),
+                           seasonal_vaccine = seasonal_holdout_pred$p1 %>% as.vector())
+
+write.csv(submission_df,".\\submissions\\h2o_baseline.csv", row.names = FALSE, quote=FALSE)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
