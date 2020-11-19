@@ -12,7 +12,9 @@ Vaccination is a key public health measure used to fight infectious diseases. As
 
 ## Methodology
 
+This is a multilabel binary classification problem as we have two labels (`h1n1_vaccine` and `seasonal_vaccine`). The dataset contains 35 features and all of them are categorical (all features are described [here](https://www.drivendata.org/competitions/66/flu-shot-learning/page/211/). Some of these features are nominal (e.g. `race`) and some are ordinal (e.g. `opinion_h1n1_vacc_effective` scaled from 1 to 5). The performance is evaluated according to the average AUC regarding the two target variables. 
 
+An Exploratory Data Analysis was done to begin investigating the problem. With a better grasp of what the data looks like, we fitted a several different models. On the one hand models with great interpretability might be more suitable to understand what features are most impactful in the model given the objective of revisiting the public health response. But on the other hand the competition only evaluates the AUC, therefore it is also important to choose the model with best predictive power.  
 
 ## Conclusion
 
